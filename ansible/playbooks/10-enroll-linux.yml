@@ -1,0 +1,47 @@
+---
+- name: Create Fleet Linux client policy
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Create Linux clients agent policy
+      ansible.builtin.uri:
+        url: "http://{{ hostvars['kibana'].ansible_host }}:5601/api/fleet/agent_policies"
+        method: POST
+        user: elastic
+        password: "{{ elastic_bootstrap_pw }}"
+        force_basic_auth: true
+        headers:
+          kbn-xsrf: "true"
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          id: "linux-clients-policy"
+          name: "Linux Clients Policy"
+          namespace: "default"
+          monitoring_enabled: ["logs", "metrics"]
+        status_code: [200, 201, 409]
+
+    - name: Get all enrollment tokens
+      ansible.builtin.uri:
+        url: "http://{{ hostvars['kibana'].ansible_host }}:5601/api/fleet/enrollment_api_keys"
+        method: GET
+        user: elastic
+        password: "{{ elastic_bootstrap_pw }}"
+        force_basic_auth: true
+        status_code: [200]
+      register: all_tokens
+
+    - name: Set client enrollment token fact
+      ansible.builtin.set_fact:
+        client_enrollment_token: "{{ (all_tokens.json['items'] | selectattr('policy_id', 'equalto', 'linux-clients-policy') | list | first).api_key }}"
+
+
+
+- name: Enroll Linux clients with Fleet
+  hosts: linux_clients
+  become: true
+  roles:
+    - client_linux
+  vars:
+    fleet_enrollment_token: "{{ hostvars['localhost'].client_enrollment_token }}"
+

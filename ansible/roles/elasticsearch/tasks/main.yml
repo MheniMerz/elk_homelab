@@ -1,0 +1,161 @@
+---
+# This role runs serially (see playbook) so es01 bootstraps first, then es02/es03 join.
+
+- name: Install Elasticsearch package
+  ansible.builtin.apt:
+    name: "elasticsearch={{ elastic_version }}"
+    state: present
+    update_cache: true
+  register: es_install
+
+- name: Write JVM heap options
+  ansible.builtin.copy:
+    dest: /etc/elasticsearch/jvm.options.d/heap.options
+    content: |
+      -Xms{{ es_heap_size }}
+      -Xmx{{ es_heap_size }}
+    owner: root
+    group: elasticsearch
+    mode: '0660'
+
+# ---- Bootstrap node (es01) -------------------------------------------------
+
+- name: Write elasticsearch.yml on bootstrap node
+  ansible.builtin.template:
+    src: elasticsearch.yml.j2
+    dest: /etc/elasticsearch/elasticsearch.yml
+    owner: root
+    group: elasticsearch
+    mode: '0660'
+  when: inventory_hostname == es_bootstrap_node
+
+- name: Start Elasticsearch on bootstrap node
+  ansible.builtin.systemd:
+    name: elasticsearch
+    state: started
+    enabled: true
+  when: inventory_hostname == es_bootstrap_node
+
+- name: Wait for bootstrap node to finish initializing
+  ansible.builtin.uri:
+    url: "https://{{ ansible_host }}:9200"
+    method: GET
+    validate_certs: false
+    status_code: [200, 401]
+  register: es_ready
+  until: es_ready.status in [200, 401]
+  retries: 30
+  delay: 10
+  when: inventory_hostname == es_bootstrap_node
+
+- name: Reset elastic superuser password to known value
+  ansible.builtin.shell: |
+    printf '%s\n%s\n' "$ELASTIC_PW" "$ELASTIC_PW" | \
+      /usr/share/elasticsearch/bin/elasticsearch-reset-password -u elastic -i --batch
+  args:
+    executable: /bin/bash
+  environment:
+    ELASTIC_PW: "{{ elastic_bootstrap_pw }}"
+  when: inventory_hostname == es_bootstrap_node
+  no_log: true
+  run_once: true
+  register: pw_reset
+  changed_when: pw_reset.rc == 0
+  failed_when:
+    - pw_reset.rc != 0
+    - "'already' not in pw_reset.stderr | default('')"
+
+# ---- Joining nodes (es02, es03) --------------------------------------------
+# The ES 8.x APT package runs security auto-configuration during postinst:
+# it creates certs and writes the security block (with cluster.initial_master_nodes)
+# to elasticsearch.yml before the service ever starts. We use that auto-configured
+# state directly for enrollment — no start/stop dance needed.
+
+- name: Check if joining node has already been enrolled
+  ansible.builtin.stat:
+    path: /etc/elasticsearch/.enrolled
+  register: enrollment_done
+  when: inventory_hostname != es_bootstrap_node
+
+- name: Generate node enrollment token
+  ansible.builtin.command: /usr/share/elasticsearch/bin/elasticsearch-create-enrollment-token -s node
+  delegate_to: "{{ es_bootstrap_node }}"
+  register: node_token
+  changed_when: false
+  when:
+    - inventory_hostname != es_bootstrap_node
+    - not enrollment_done.stat.exists
+
+- name: Reconfigure joining nodes with enrollment token
+  ansible.builtin.shell: |
+    echo "y" | /usr/share/elasticsearch/bin/elasticsearch-reconfigure-node \
+      --enrollment-token {{ node_token.stdout }}
+  args:
+    executable: /bin/bash
+  when:
+    - inventory_hostname != es_bootstrap_node
+    - not enrollment_done.stat.exists
+
+- name: Mark enrollment as complete
+  ansible.builtin.file:
+    path: /etc/elasticsearch/.enrolled
+    state: touch
+    owner: root
+    group: elasticsearch
+    mode: '0640'
+  when:
+    - inventory_hostname != es_bootstrap_node
+    - not enrollment_done.stat.exists
+
+- name: Remove auto-configured initial_master_nodes on joining nodes
+  ansible.builtin.lineinfile:
+    path: /etc/elasticsearch/elasticsearch.yml
+    regexp: '^cluster\.initial_master_nodes:.*'
+    state: absent
+  when: inventory_hostname != es_bootstrap_node
+
+- name: Write node-specific settings for joining nodes
+  ansible.builtin.blockinfile:
+    path: /etc/elasticsearch/elasticsearch.yml
+    marker: "# {mark} ANSIBLE MANAGED NODE SETTINGS"
+    block: |
+      cluster.name: {{ es_cluster_name }}
+      node.name: {{ es_node_name }}
+      node.roles: [ master, data, ingest ]
+      network.host: 0.0.0.0
+      http.port: 9200
+      transport.port: 9300
+    owner: root
+    group: elasticsearch
+    mode: '0660'
+  when: inventory_hostname != es_bootstrap_node
+
+- name: Set discovery.seed_hosts to all cluster node IPs on joining nodes
+  ansible.builtin.lineinfile:
+    path: /etc/elasticsearch/elasticsearch.yml
+    regexp: '^discovery\.seed_hosts:.*'
+    line: "discovery.seed_hosts: {{ groups['elasticsearch'] | map('extract', hostvars, 'ansible_host') | list | to_json }}"
+  when: inventory_hostname != es_bootstrap_node
+
+
+
+- name: Start Elasticsearch on joining nodes
+  ansible.builtin.systemd:
+    name: elasticsearch
+    state: started
+    enabled: true
+  when: inventory_hostname != es_bootstrap_node
+
+- name: Wait for joining node HTTP to come up
+  ansible.builtin.wait_for:
+    host: "{{ ansible_host }}"
+    port: 9200
+    timeout: 300
+  when: inventory_hostname != es_bootstrap_node
+
+- name: Fetch http_ca.crt from bootstrap node (needed by Kibana, Logstash, clients)
+  ansible.builtin.fetch:
+    src: /etc/elasticsearch/certs/http_ca.crt
+    dest: "{{ playbook_dir }}/../files/http_ca.crt"
+    flat: true
+  when: inventory_hostname == es_bootstrap_node

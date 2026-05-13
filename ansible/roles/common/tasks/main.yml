@@ -1,0 +1,67 @@
+---
+- name: Add ELK node entries to /etc/hosts
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    line: "{{ hostvars[item].ansible_host }} {{ item }}.{{ elk_domain }} {{ item }}"
+    regexp: "^[0-9.]+ .*\\b{{ item }}\\b.*$"
+  loop: "{{ groups['elk_stack'] }}"
+
+- name: Set timezone to UTC
+  community.general.timezone:
+    name: Etc/UTC
+
+- name: Stop apt-daily timers to prevent lock contention
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: stopped
+  loop:
+    - apt-daily.timer
+    - apt-daily-upgrade.timer
+  failed_when: false
+
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name:
+      - curl
+      - gnupg
+      - ca-certificates
+      - apt-transport-https
+      - python3-pip
+      - jq
+    state: present
+    update_cache: true
+
+- name: Disable swap (Elasticsearch requirement)
+  ansible.builtin.command: swapoff -a
+  when: "'elasticsearch' in group_names"
+  changed_when: false
+
+- name: Remove swap from fstab
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^([^#].*\sswap\s.*)$'
+    replace: '# \1'
+  when: "'elasticsearch' in group_names"
+
+- name: Set vm.max_map_count (Elasticsearch requirement)
+  ansible.posix.sysctl:
+    name: vm.max_map_count
+    value: '262144'
+    sysctl_set: true
+    state: present
+    reload: true
+  when: "'elasticsearch' in group_names"
+
+- name: Add Elastic GPG key
+  ansible.builtin.get_url:
+    url: https://artifacts.elastic.co/GPG-KEY-elasticsearch
+    dest: /usr/share/keyrings/elastic.asc
+    mode: '0644'
+
+- name: Add Elastic APT repo
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/usr/share/keyrings/elastic.asc] https://artifacts.elastic.co/packages/8.x/apt stable main"
+    filename: elastic-8.x
+    state: present
+    update_cache: true

@@ -1,0 +1,104 @@
+---
+- name: Install Logstash
+  ansible.builtin.apt:
+    name: "logstash={{ elastic_version | regex_replace('^', '1:') }}-1"
+    state: present
+    update_cache: true
+  register: ls_install
+  failed_when:
+    - ls_install.failed
+    - "'Unable to locate' not in (ls_install.msg | default(''))"
+
+# Fallback if the epoch-prefixed version string doesn't match — just install latest 8.x
+- name: Install Logstash (fallback, latest in repo)
+  ansible.builtin.apt:
+    name: logstash
+    state: present
+  when: ls_install.failed | default(false)
+
+- name: Create certs directory
+  ansible.builtin.file:
+    path: /etc/logstash/certs
+    state: directory
+    owner: root
+    group: logstash
+    mode: '0750'
+
+- name: Copy ES http_ca.crt to Logstash
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../files/http_ca.crt"
+    dest: /etc/logstash/certs/http_ca.crt
+    owner: root
+    group: logstash
+    mode: '0640'
+
+# Create a dedicated role + user in ES for Logstash to write with.
+- name: Create logstash_writer role in Elasticsearch
+  ansible.builtin.uri:
+    url: "https://{{ hostvars[es_bootstrap_node].ansible_host }}:9200/_security/role/logstash_writer"
+    method: POST
+    user: elastic
+    password: "{{ elastic_bootstrap_pw }}"
+    force_basic_auth: true
+    validate_certs: false
+    headers:
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      cluster: ["manage_index_templates", "monitor", "manage_ilm"]
+      indices:
+        - names: ["syslog-network-*", "logs-*"]
+          privileges: ["write", "create", "create_index", "manage", "manage_ilm"]
+    status_code: [200, 201]
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Create logstash_writer user in Elasticsearch
+  ansible.builtin.uri:
+    url: "https://{{ hostvars[es_bootstrap_node].ansible_host }}:9200/_security/user/logstash_writer"
+    method: POST
+    user: elastic
+    password: "{{ elastic_bootstrap_pw }}"
+    force_basic_auth: true
+    validate_certs: false
+    headers:
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      password: "{{ logstash_writer_pw }}"
+      roles: ["logstash_writer"]
+    status_code: [200, 201]
+  delegate_to: localhost
+  become: false
+  run_once: true
+  no_log: true
+
+- name: Deploy syslog pipeline
+  ansible.builtin.template:
+    src: syslog.conf.j2
+    dest: /etc/logstash/conf.d/syslog.conf
+    owner: root
+    group: logstash
+    mode: '0640'
+  notify: restart logstash
+
+- name: Set pipeline workers sensibly
+  ansible.builtin.lineinfile:
+    path: /etc/logstash/logstash.yml
+    regexp: '^#?pipeline\.workers:'
+    line: "pipeline.workers: 2"
+  notify: restart logstash
+
+- name: Enable and start Logstash
+  ansible.builtin.systemd:
+    name: logstash
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Wait for syslog listener
+  ansible.builtin.wait_for:
+    host: "{{ ansible_host }}"
+    port: 5514
+    timeout: 360

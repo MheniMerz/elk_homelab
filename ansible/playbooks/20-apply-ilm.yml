@@ -1,0 +1,63 @@
+---
+- name: Apply ILM policies and index templates
+  hosts: localhost
+  gather_facts: false
+  vars:
+    es_url: "https://{{ hostvars['es01'].ansible_host }}:9200"
+  tasks:
+    - name: Create homelab-logs ILM policy
+      ansible.builtin.uri:
+        url: "{{ es_url }}/_ilm/policy/homelab-logs"
+        method: PUT
+        user: elastic
+        password: "{{ elastic_bootstrap_pw }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          policy:
+            phases:
+              hot:
+                actions:
+                  rollover:
+                    max_primary_shard_size: "{{ ilm_hot_rollover_gb }}gb"
+                    max_age: "{{ ilm_hot_rollover_age }}"
+              warm:
+                min_age: "{{ ilm_hot_rollover_age }}"
+                actions:
+                  forcemerge:
+                    max_num_segments: 1
+                  set_priority:
+                    priority: 50
+              delete:
+                min_age: "{{ ilm_delete_age }}"
+                actions:
+                  delete: {}
+        status_code: [200, 201]
+
+    - name: Attach ILM policy to syslog-network index template
+      ansible.builtin.uri:
+        url: "{{ es_url }}/_index_template/syslog-network"
+        method: PUT
+        user: elastic
+        password: "{{ elastic_bootstrap_pw }}"
+        force_basic_auth: true
+        validate_certs: false
+        headers:
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          index_patterns: ["syslog-network-*"]
+          template:
+            settings:
+              number_of_shards: 1
+              number_of_replicas: 1
+              "index.lifecycle.name": "homelab-logs"
+              "index.lifecycle.rollover_alias": "syslog-network"
+        status_code: [200, 201]
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: "ILM policy 'homelab-logs' applied: rollover at {{ ilm_hot_rollover_gb }}GB or {{ ilm_hot_rollover_age }}, delete after {{ ilm_delete_age }}"

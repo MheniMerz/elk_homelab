@@ -1,0 +1,115 @@
+---
+# Deploys Elastic Agent on ES nodes for Kibana Stack Monitoring.
+# Run after 00-deploy-stack.yml.
+# Usage: ansible-playbook playbooks/05-enable-monitoring.yml --ask-vault-pass
+
+- name: Create Fleet monitoring policy and Elasticsearch integration
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Wait for Kibana to be ready
+      ansible.builtin.uri:
+        url: "http://{{ hostvars['kibana'].ansible_host }}:5601/api/status"
+        method: GET
+        user: elastic
+        password: "{{ elastic_bootstrap_pw }}"
+        force_basic_auth: true
+        status_code: [200]
+      register: kibana_status
+      until: kibana_status.status == 200
+      retries: 30
+      delay: 10
+
+    - name: Create monitoring agent policy
+      ansible.builtin.uri:
+        url: "http://{{ hostvars['kibana'].ansible_host }}:5601/api/fleet/agent_policies"
+        method: POST
+        user: elastic
+        password: "{{ elastic_bootstrap_pw }}"
+        force_basic_auth: true
+        headers:
+          kbn-xsrf: "true"
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          id: "monitoring-policy"
+          name: "Stack Monitoring Policy"
+          namespace: "default"
+          monitoring_enabled: ["logs", "metrics"]
+        status_code: [200, 201, 409]
+      register: monitoring_policy
+      changed_when: monitoring_policy.status in [200, 201]
+
+    - name: Get Elasticsearch integration package version
+      ansible.builtin.uri:
+        url: "http://{{ hostvars['kibana'].ansible_host }}:5601/api/fleet/epm/packages/elasticsearch"
+        method: GET
+        user: elastic
+        password: "{{ elastic_bootstrap_pw }}"
+        force_basic_auth: true
+        status_code: [200]
+      register: es_pkg
+
+    - name: Add Elasticsearch integration to monitoring policy
+      ansible.builtin.uri:
+        url: "http://{{ hostvars['kibana'].ansible_host }}:5601/api/fleet/package_policies"
+        method: POST
+        user: elastic
+        password: "{{ elastic_bootstrap_pw }}"
+        force_basic_auth: true
+        headers:
+          kbn-xsrf: "true"
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          name: "elasticsearch-monitoring"
+          namespace: "default"
+          policy_id: "monitoring-policy"
+          package:
+            name: "elasticsearch"
+            version: "{{ es_pkg.json.item.version }}"
+          inputs:
+            - type: "logfile"
+              enabled: false
+              streams: []
+            - type: "elasticsearch/metrics"
+              enabled: true
+              vars:
+                hosts:
+                  value:
+                    - "https://localhost:9200"
+                username:
+                  value: "elastic"
+                password:
+                  value: "{{ elastic_bootstrap_pw }}"
+                ssl.certificate_authorities:
+                  value:
+                    - "/etc/elasticsearch/certs/http_ca.crt"
+                scope:
+                  value: "node"
+              streams: []
+        status_code: [200, 201, 409]
+      register: es_integration
+      changed_when: es_integration.status in [200, 201]
+
+    - name: Get monitoring policy enrollment token
+      ansible.builtin.uri:
+        url: "http://{{ hostvars['kibana'].ansible_host }}:5601/api/fleet/enrollment_api_keys"
+        method: GET
+        user: elastic
+        password: "{{ elastic_bootstrap_pw }}"
+        force_basic_auth: true
+        status_code: [200]
+      register: all_tokens
+
+    - name: Set monitoring enrollment token fact
+      ansible.builtin.set_fact:
+        monitoring_token: "{{ (all_tokens.json['items'] | selectattr('policy_id', 'equalto', 'monitoring-policy') | list | first).api_key }}"
+
+- name: Deploy Elastic Agent on Elasticsearch nodes
+  hosts: elasticsearch
+  become: true
+  roles:
+    - elastic_agent
+  vars:
+    fleet_enrollment_token: "{{ hostvars['localhost'].monitoring_token }}"

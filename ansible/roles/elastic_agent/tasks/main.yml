@@ -1,0 +1,38 @@
+---
+- name: Check if Elastic Agent is already installed
+  ansible.builtin.stat:
+    path: /opt/Elastic/Agent/elastic-agent
+  register: agent_installed
+
+- name: Download Elastic Agent tarball
+  ansible.builtin.get_url:
+    url: "https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-{{ elastic_version }}-linux-x86_64.tar.gz"
+    dest: "/tmp/elastic-agent-{{ elastic_version }}.tar.gz"
+    mode: '0644'
+  when: not agent_installed.stat.exists
+
+- name: Extract Elastic Agent
+  ansible.builtin.unarchive:
+    src: "/tmp/elastic-agent-{{ elastic_version }}.tar.gz"
+    dest: /tmp/
+    remote_src: true
+    creates: "/tmp/elastic-agent-{{ elastic_version }}-linux-x86_64/elastic-agent"
+  when: not agent_installed.stat.exists
+
+- name: Install and enroll Elastic Agent
+  ansible.builtin.command: >
+    /tmp/elastic-agent-{{ elastic_version }}-linux-x86_64/elastic-agent install
+      --non-interactive
+      --url=https://{{ hostvars['fleet'].ansible_host }}:8220
+      --enrollment-token={{ fleet_enrollment_token }}
+      --insecure
+  args:
+    creates: /opt/Elastic/Agent/elastic-agent
+  no_log: true
+  when: not agent_installed.stat.exists
+
+- name: Wait for Elastic Agent service to be running
+  ansible.builtin.systemd:
+    name: elastic-agent
+    state: started
+  when: not agent_installed.stat.exists

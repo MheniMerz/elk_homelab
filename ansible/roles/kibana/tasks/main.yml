@@ -1,0 +1,54 @@
+---
+- name: Install Kibana
+  ansible.builtin.apt:
+    name: "kibana={{ elastic_version }}"
+    state: present
+    update_cache: true
+
+- name: Generate Kibana enrollment token on ES bootstrap node
+  ansible.builtin.command: /usr/share/elasticsearch/bin/elasticsearch-create-enrollment-token -s kibana
+  delegate_to: "{{ es_bootstrap_node }}"
+  register: kibana_token
+  changed_when: false
+  run_once: true
+
+- name: Enroll Kibana with Elasticsearch
+  ansible.builtin.command: >
+    /usr/share/kibana/bin/kibana-setup --enrollment-token {{ kibana_token.stdout }}
+  args:
+    creates: /etc/kibana/kibana.yml.bak
+  register: kibana_setup
+
+- name: Set server.host so Kibana is reachable on the LAN
+  ansible.builtin.lineinfile:
+    path: /etc/kibana/kibana.yml
+    regexp: '^#?server\.host:'
+    line: 'server.host: "0.0.0.0"'
+  notify: restart kibana
+
+- name: Set server.publicBaseUrl
+  ansible.builtin.lineinfile:
+    path: /etc/kibana/kibana.yml
+    regexp: '^#?server\.publicBaseUrl:'
+    line: 'server.publicBaseUrl: "http://{{ kibana_host }}:5601"'
+  notify: restart kibana
+
+- name: Disable monitoring CCS (no dedicated monitoring cluster)
+  ansible.builtin.lineinfile:
+    path: /etc/kibana/kibana.yml
+    regexp: '^#?monitoring\.ui\.ccs\.enabled:'
+    line: 'monitoring.ui.ccs.enabled: false'
+  notify: restart kibana
+
+- name: Enable and start Kibana
+  ansible.builtin.systemd:
+    name: kibana
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Wait for Kibana HTTP
+  ansible.builtin.wait_for:
+    host: "{{ ansible_host }}"
+    port: 5601
+    timeout: 300

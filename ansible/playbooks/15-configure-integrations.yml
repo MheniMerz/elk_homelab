@@ -1,0 +1,111 @@
+---
+# Adds integrations to the Linux Clients Policy via Fleet API.
+# Run after 10-enroll-linux.yml (which creates the policy and enrolls agents).
+#
+# All integrations:    ansible-playbook playbooks/15-configure-integrations.yml --ask-vault-pass
+# Single integration:  ansible-playbook playbooks/15-configure-integrations.yml --tags system --ask-vault-pass
+
+- name: Configure Linux client integrations
+  hosts: localhost
+  gather_facts: false
+  vars:
+    kibana_url: "http://{{ hostvars['kibana'].ansible_host }}:5601"
+    policy_id: "linux-clients-policy"
+
+  tasks:
+    - name: Wait for Kibana to be ready
+      ansible.builtin.uri:
+        url: "{{ kibana_url }}/api/status"
+        method: GET
+        user: elastic
+        password: "{{ elastic_bootstrap_pw }}"
+        force_basic_auth: true
+        status_code: [200]
+      register: kibana_status
+      until: kibana_status.status == 200
+      retries: 30
+      delay: 10
+
+    # ── System ─────────────────────────────────────────────────────────
+    - name: Get System package version
+      ansible.builtin.uri:
+        url: "{{ kibana_url }}/api/fleet/epm/packages/system"
+        method: GET
+        user: elastic
+        password: "{{ elastic_bootstrap_pw }}"
+        force_basic_auth: true
+        status_code: [200]
+      register: system_pkg
+      tags: [system]
+
+    - name: Add System integration to Linux Clients Policy
+      ansible.builtin.uri:
+        url: "{{ kibana_url }}/api/fleet/package_policies"
+        method: POST
+        user: elastic
+        password: "{{ elastic_bootstrap_pw }}"
+        force_basic_auth: true
+        headers:
+          kbn-xsrf: "true"
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          name: "system-linux-clients"
+          namespace: "default"
+          policy_id: "{{ policy_id }}"
+          package:
+            name: "system"
+            version: "{{ system_pkg.json.item.version }}"
+          inputs:
+            - type: "logfile"
+              enabled: true
+              streams: []
+            - type: "system/metrics"
+              enabled: true
+              streams: []
+            - type: "windows/metrics"
+              enabled: false
+              streams: []
+        status_code: [200, 201, 409]
+      register: system_result
+      changed_when: system_result.status in [200, 201]
+      tags: [system]
+
+    # ── Auditd ─────────────────────────────────────────────────────────
+    - name: Get Auditd package version
+      ansible.builtin.uri:
+        url: "{{ kibana_url }}/api/fleet/epm/packages/auditd"
+        method: GET
+        user: elastic
+        password: "{{ elastic_bootstrap_pw }}"
+        force_basic_auth: true
+        status_code: [200]
+      register: auditd_pkg
+      tags: [auditd]
+
+    - name: Add Auditd integration to Linux Clients Policy
+      ansible.builtin.uri:
+        url: "{{ kibana_url }}/api/fleet/package_policies"
+        method: POST
+        user: elastic
+        password: "{{ elastic_bootstrap_pw }}"
+        force_basic_auth: true
+        headers:
+          kbn-xsrf: "true"
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          name: "auditd-linux-clients"
+          namespace: "default"
+          policy_id: "{{ policy_id }}"
+          package:
+            name: "auditd"
+            version: "{{ auditd_pkg.json.item.version }}"
+          inputs:
+            - type: "logfile"
+              enabled: true
+              streams: []
+        status_code: [200, 201, 409]
+      register: auditd_result
+      changed_when: auditd_result.status in [200, 201]
+      tags: [auditd]

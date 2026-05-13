@@ -1,0 +1,49 @@
+---
+- name: Check if Elastic Agent already installed
+  ansible.builtin.stat:
+    path: /opt/Elastic/Agent/elastic-agent
+  register: agent_installed
+
+- name: Re-enroll Elastic Agent if already installed (fixes stale fleet URL)
+  ansible.builtin.command: >
+    /opt/Elastic/Agent/elastic-agent enroll
+      --url=https://{{ hostvars['fleet'].ansible_host }}:8220
+      --enrollment-token={{ fleet_enrollment_token }}
+      --insecure
+      --force
+  when: agent_installed.stat.exists
+  no_log: true
+  notify: restart elastic-agent
+
+- name: Download Elastic Agent
+  ansible.builtin.get_url:
+    url: "https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-{{ elastic_version }}-linux-x86_64.tar.gz"
+    dest: "/tmp/elastic-agent-{{ elastic_version }}.tar.gz"
+    mode: '0644'
+  when: not agent_installed.stat.exists
+
+- name: Extract Elastic Agent
+  ansible.builtin.unarchive:
+    src: "/tmp/elastic-agent-{{ elastic_version }}.tar.gz"
+    dest: /tmp/
+    remote_src: true
+    creates: "/tmp/elastic-agent-{{ elastic_version }}-linux-x86_64/elastic-agent"
+  when: not agent_installed.stat.exists
+
+- name: Install & enroll Elastic Agent
+  ansible.builtin.command: >
+    /tmp/elastic-agent-{{ elastic_version }}-linux-x86_64/elastic-agent install
+      --non-interactive
+      --url=https://{{ hostvars['fleet'].ansible_host }}:8220
+      --enrollment-token={{ fleet_enrollment_token }}
+      --insecure
+  args:
+    creates: /opt/Elastic/Agent/elastic-agent
+  when: not agent_installed.stat.exists
+  no_log: false
+
+- name: Ensure elastic-agent service is running
+  ansible.builtin.systemd:
+    name: elastic-agent
+    state: started
+    enabled: true

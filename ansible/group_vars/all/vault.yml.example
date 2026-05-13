@@ -1,0 +1,10 @@
+---
+# Copy this file to group_vars/all/vault.yml and encrypt with:
+#   ansible-vault encrypt group_vars/all/vault.yml
+#
+# Or create fresh:
+#   ansible-vault create group_vars/all/vault.yml
+
+vault_elastic_bootstrap_pw: "change-me-to-a-long-random-string"
+vault_kibana_system_pw:     "change-me-to-a-long-random-string"
+vault_logstash_writer_pw:   "change-me-to-a-long-random-string"

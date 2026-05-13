@@ -1,0 +1,107 @@
+---
+# This role runs serially (see playbook) so es01 bootstraps first, then es02/es03 join.
+
+- name: Install Elasticsearch package
+  ansible.builtin.apt:
+    name: "elasticsearch={{ elastic_version }}"
+    state: present
+    update_cache: true
+  register: es_install
+
+- name: Write elasticsearch.yml
+  ansible.builtin.template:
+    src: elasticsearch.yml.j2
+    dest: /etc/elasticsearch/elasticsearch.yml
+    owner: root
+    group: elasticsearch
+    mode: '0660'
+  notify: restart elasticsearch
+
+- name: Write JVM heap options
+  ansible.builtin.copy:
+    dest: /etc/elasticsearch/jvm.options.d/heap.options
+    content: |
+      -Xms{{ es_heap_size }}
+      -Xmx{{ es_heap_size }}
+    owner: root
+    group: elasticsearch
+    mode: '0660'
+  notify: restart elasticsearch
+
+# ---- Bootstrap node (es01) -------------------------------------------------
+
+- name: Start Elasticsearch on bootstrap node
+  ansible.builtin.systemd:
+    name: elasticsearch
+    state: started
+    enabled: true
+  when: inventory_hostname == es_bootstrap_node
+
+- name: Wait for bootstrap node HTTP to come up
+  ansible.builtin.wait_for:
+    host: "{{ ansible_host }}"
+    port: 9200
+    timeout: 300
+  when: inventory_hostname == es_bootstrap_node
+
+- name: Reset elastic superuser password to known value
+  ansible.builtin.shell: |
+    printf '%s\n%s\n' "$ELASTIC_PW" "$ELASTIC_PW" | \
+      /usr/share/elasticsearch/bin/elasticsearch-reset-password -u elastic -i --batch
+
+  args:
+    executable: /bin/bash
+  environment:
+    ELASTIC_PW: "{{ elastic_bootstrap_pw }}"
+
+  when: inventory_hostname == es_bootstrap_node
+  no_log: false
+  run_once: true
+  register: pw_reset
+  changed_when: pw_reset.rc == 0
+  failed_when:
+    - pw_reset.rc != 0
+    - "'already' not in pw_reset.stderr | default('')"
+
+- name: Generate node enrollment token on bootstrap node
+  ansible.builtin.command: /usr/share/elasticsearch/bin/elasticsearch-create-enrollment-token -s node
+  when: inventory_hostname == es_bootstrap_node
+  register: node_token
+  changed_when: false
+  run_once: true
+
+- name: Share enrollment token as a fact to other nodes
+  ansible.builtin.set_fact:
+    cluster_enrollment_token: "{{ hostvars[es_bootstrap_node].node_token.stdout }}"
+  when: inventory_hostname != es_bootstrap_node
+
+# ---- Joining nodes (es02, es03) --------------------------------------------
+
+- name: Reconfigure joining nodes with enrollment token
+  ansible.builtin.command: >
+    /usr/share/elasticsearch/bin/elasticsearch-reconfigure-node
+    --enrollment-token {{ cluster_enrollment_token }}
+  args:
+    creates: /etc/elasticsearch/certs/transport.p12.bak
+  when: inventory_hostname != es_bootstrap_node
+
+- name: Start Elasticsearch on joining nodes
+  ansible.builtin.systemd:
+    name: elasticsearch
+    state: started
+    enabled: true
+  when: inventory_hostname != es_bootstrap_node
+
+- name: Wait for joining node HTTP to come up
+  ansible.builtin.wait_for:
+    host: "{{ ansible_host }}"
+    port: 9200
+    timeout: 300
+  when: inventory_hostname != es_bootstrap_node
+
+- name: Fetch http_ca.crt from bootstrap node (needed by Kibana, Logstash, clients)
+  ansible.builtin.fetch:
+    src: /etc/elasticsearch/certs/http_ca.crt
+    dest: "{{ playbook_dir }}/../files/http_ca.crt"
+    flat: true
+  when: inventory_hostname == es_bootstrap_node

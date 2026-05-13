@@ -1,0 +1,43 @@
+---
+- name: Load enrollment token from local file
+  ansible.builtin.set_fact:
+    fleet_token: "{{ lookup('file', playbook_dir + '/../files/fleet_enrollment_token') }}"
+  no_log: true
+  delegate_to: localhost
+  become: false
+
+- name: Check if Elastic Agent already installed
+  ansible.windows.win_stat:
+    path: 'C:\Program Files\Elastic\Agent\elastic-agent.exe'
+  register: agent_installed
+
+- name: Download Elastic Agent zip
+  ansible.windows.win_get_url:
+    url: "https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-{{ elastic_version }}-windows-x86_64.zip"
+    dest: 'C:\Windows\Temp\elastic-agent.zip'
+  when: not agent_installed.stat.exists
+
+- name: Extract Elastic Agent
+  community.windows.win_unzip:
+    src: 'C:\Windows\Temp\elastic-agent.zip'
+    dest: 'C:\Windows\Temp\'
+    creates: 'C:\Windows\Temp\elastic-agent-{{ elastic_version }}-windows-x86_64\elastic-agent.exe'
+  when: not agent_installed.stat.exists
+
+- name: Install & enroll Elastic Agent on Windows
+  ansible.windows.win_command: >
+    elastic-agent.exe install
+      --non-interactive
+      --url=https://{{ hostvars['fleet'].ansible_host }}:8220
+      --enrollment-token={{ fleet_token }}
+      --insecure
+  args:
+    chdir: 'C:\Windows\Temp\elastic-agent-{{ elastic_version }}-windows-x86_64'
+  when: not agent_installed.stat.exists
+  no_log: true
+
+- name: Ensure Elastic Agent service is running
+  ansible.windows.win_service:
+    name: Elastic Agent
+    state: started
+    start_mode: auto

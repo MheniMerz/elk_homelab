@@ -1,0 +1,6 @@
+---
+- name: Enroll Windows clients with Fleet
+  hosts: windows_clients
+  gather_facts: true
+  roles:
+    - client_windows

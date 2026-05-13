@@ -1,0 +1,53 @@
+input {
+  udp {
+    port => 5514
+    type => "syslog"
+  }
+  tcp {
+    port => 5514
+    type => "syslog"
+  }
+}
+
+filter {
+  if [type] == "syslog" {
+    # Try RFC5424 first, fall back to RFC3164
+    grok {
+      match => {
+        "message" => [
+          "%{SYSLOG5424PRI}%{NONNEGINT:syslog5424_ver} +(?:%{TIMESTAMP_ISO8601:syslog_timestamp}|-) +(?:%{HOSTNAME:syslog_hostname}|-) +(-|%{SYSLOG5424PRINTASCII:syslog_app}) +(-|%{SYSLOG5424PRINTASCII:syslog_proc}) +(-|%{SYSLOG5424PRINTASCII:syslog_msgid}) +(?:\[%{DATA:syslog_sd}\]|-|) +%{GREEDYDATA:syslog_msg}",
+          "<%{POSINT:syslog_pri}>%{SYSLOGTIMESTAMP:syslog_timestamp} %{SYSLOGHOST:syslog_hostname} %{DATA:syslog_program}(?:\[%{POSINT:syslog_pid}\])?: %{GREEDYDATA:syslog_msg}"
+        ]
+      }
+      tag_on_failure => ["_grokparsefailure_syslog"]
+    }
+    date {
+      match => [
+        "syslog_timestamp",
+        "ISO8601",
+        "MMM  d HH:mm:ss",
+        "MMM dd HH:mm:ss"
+      ]
+      timezone => "UTC"
+    }
+    mutate {
+      add_field => { "source_host" => "%{[host][ip]}" }
+    }
+  }
+}
+
+output {
+  elasticsearch {
+    hosts => [
+{% for h in es_hosts %}
+      "https://{{ h }}:9200"{% if not loop.last %},{% endif %}
+
+{% endfor %}
+    ]
+    user => "logstash_writer"
+    password => "{{ logstash_writer_pw }}"
+    ssl_enabled => true
+    ssl_certificate_authorities => "/etc/logstash/certs/http_ca.crt"
+    index => "syslog-network-%{+YYYY.MM.dd}"
+  }
+}

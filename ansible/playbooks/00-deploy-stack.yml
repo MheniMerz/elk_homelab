@@ -1,0 +1,74 @@
+---
+# Deploys the entire ELK stack in the correct order.
+# Usage: ansible-playbook playbooks/00-deploy-stack.yml --ask-vault-pass
+
+- name: Base OS prep for all ELK VMs
+  hosts: elk_stack
+  become: true
+  roles:
+    - common
+
+- name: Bootstrap Elasticsearch cluster
+  hosts: elasticsearch
+  become: true
+  serial: 1    # es01 must finish before es02 joins, etc.
+  roles:
+    - elasticsearch
+
+- name: Verify Elasticsearch cluster health
+  hosts: elasticsearch
+  become: true
+  gather_facts: false
+  run_once: true
+  tasks:
+    - name: Wait for cluster to be green with 3 nodes
+      ansible.builtin.uri:
+        url: "https://{{ ansible_host }}:9200/_cluster/health"
+        method: GET
+        user: elastic
+        password: "{{ elastic_bootstrap_pw }}"
+        force_basic_auth: true
+        validate_certs: false
+        return_content: true
+      register: health
+      until:
+        - health.json.status in ['green', 'yellow']
+        - health.json.number_of_nodes == 3
+      retries: 30
+      delay: 10
+
+- name: Install Kibana
+  hosts: kibana
+  become: true
+  roles:
+    - kibana
+
+- name: Install Fleet Server
+  hosts: fleet_server
+  become: true
+  roles:
+    - fleet_server
+
+- name: Install Logstash (syslog pipeline for network gear)
+  hosts: logstash
+  become: true
+  roles:
+    - logstash
+
+- name: Post-deployment summary
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Show access info
+      ansible.builtin.debug:
+        msg:
+          - "====================================================="
+          - " ELK stack deployed."
+          - " Kibana:        http://{{ hostvars['kibana'].ansible_host }}:5601"
+          - " Elasticsearch: https://{{ hostvars['es01'].ansible_host }}:9200"
+          - " Fleet Server:  https://{{ hostvars['fleet'].ansible_host }}:8220"
+          - " Logstash syslog: {{ hostvars['logstash'].ansible_host }}:5514 (UDP/TCP)"
+          - ""
+          - " Login: elastic / <vault_elastic_bootstrap_pw>"
+          - " Next: run 10-enroll-linux.yml, 11-enroll-windows.yml, 20-apply-ilm.yml"
+          - "====================================================="

@@ -1,0 +1,31 @@
+cluster.name: {{ es_cluster_name }}
+node.name: {{ es_node_name }}
+node.roles: [ master, data, ingest ]
+
+network.host: 0.0.0.0
+http.port: 9200
+transport.port: 9300
+
+discovery.seed_hosts:
+{% for h in es_hosts %}
+  - "{{ h }}"
+{% endfor %}
+
+{% if inventory_hostname == es_bootstrap_node %}
+cluster.initial_master_nodes:
+  - "{{ es_node_name }}"
+{% endif %}
+
+path.data: /var/lib/elasticsearch
+path.logs: /var/log/elasticsearch
+
+xpack.security.enabled: true
+xpack.security.enrollment.enabled: true
+xpack.security.http.ssl:
+  enabled: true
+  keystore.path: certs/http.p12
+xpack.security.transport.ssl:
+  enabled: true
+  verification_mode: certificate
+  keystore.path: certs/transport.p12
+  truststore.path: certs/transport.p12

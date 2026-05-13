@@ -1,0 +1,120 @@
+---
+# Creates a Fleet Server policy via Kibana API, gets a service token,
+# then installs elastic-agent in Fleet Server mode.
+
+- name: Wait for Kibana to be ready before Fleet API calls
+  ansible.builtin.uri:
+    url: "http://{{ hostvars['kibana'].ansible_host }}:5601/api/status"
+    method: GET
+    user: elastic
+    password: "{{ elastic_bootstrap_pw }}"
+    force_basic_auth: true
+    status_code: [200]
+  register: kibana_status
+  until: kibana_status.status == 200
+  retries: 30
+  delay: 10
+  run_once: true
+
+
+
+- name: Create Fleet Server service token via ES API
+  ansible.builtin.uri:
+    url: "https://{{ hostvars[es_bootstrap_node].ansible_host }}:9200/_security/service/elastic/fleet-server/credential/token/fleet-server-token-{{ ansible_date_time.epoch }}"
+    method: POST
+    user: elastic
+    password: "{{ elastic_bootstrap_pw }}"
+    force_basic_auth: true
+    validate_certs: false
+    status_code: 200
+  register: fleet_service_token
+  run_once: true
+  no_log: true
+
+- name: Ensure default Fleet settings in Kibana (host URLs)
+  ansible.builtin.uri:
+    url: "http://{{ hostvars['kibana'].ansible_host }}:5601/api/fleet/settings"
+    method: PUT
+    user: elastic
+    password: "{{ elastic_bootstrap_pw }}"
+    force_basic_auth: true
+    headers:
+      kbn-xsrf: "true"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      fleet_server_hosts:
+        - "https://{{ fleet_host }}:8220"
+    status_code: [200, 201]
+  run_once: true
+
+- name: Get ES CA fingerprint from bootstrap node
+  ansible.builtin.command: >
+    openssl x509 -fingerprint -sha256 -noout
+    -in /etc/elasticsearch/certs/http_ca.crt
+  delegate_to: "{{ es_bootstrap_node }}"
+  register: ca_fp_raw
+  changed_when: false
+  run_once: true
+
+- name: Set ES CA fingerprint fact
+  ansible.builtin.set_fact:
+    es_ca_fingerprint: "{{ ca_fp_raw.stdout | regex_replace('.*=', '') | replace(':', '') | lower }}"
+  run_once: true
+
+
+- name: Download Elastic Agent tarball
+  ansible.builtin.get_url:
+    url: "https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-{{ elastic_version }}-linux-x86_64.tar.gz"
+    dest: "/tmp/elastic-agent-{{ elastic_version }}.tar.gz"
+    mode: '0644'
+
+- name: Extract Elastic Agent
+  ansible.builtin.unarchive:
+    src: "/tmp/elastic-agent-{{ elastic_version }}.tar.gz"
+    dest: /tmp/
+    remote_src: true
+    creates: "/tmp/elastic-agent-{{ elastic_version }}-linux-x86_64/elastic-agent"
+
+- name: Install Elastic Agent as Fleet Server
+  ansible.builtin.command: >
+    /tmp/elastic-agent-{{ elastic_version }}-linux-x86_64/elastic-agent install
+      --non-interactive
+      --fleet-server-es=https://{{ hostvars[es_bootstrap_node].ansible_host }}:9200
+      --fleet-server-service-token={{ fleet_service_token.json.token.value }}
+      --fleet-server-policy=fleet-server-policy
+      --fleet-server-port=8220
+      --fleet-server-es-ca-trusted-fingerprint={{ es_ca_fingerprint }}
+      --url=https://{{ hostvars['fleet'].ansible_host }}:8220
+      --insecure
+  args:
+    creates: /opt/Elastic/Agent/elastic-agent
+  no_log: false
+
+- name: Wait for Fleet Server to be up
+  ansible.builtin.wait_for:
+    host: "{{ ansible_host }}"
+    port: 8220
+    timeout: 300
+
+- name: Fetch default enrollment token for later use by clients
+  ansible.builtin.uri:
+    url: "http://{{ hostvars['kibana'].ansible_host }}:5601/api/fleet/enrollment_api_keys"
+    method: GET
+    user: elastic
+    password: "{{ elastic_bootstrap_pw }}"
+    force_basic_auth: true
+    headers:
+      kbn-xsrf: "true"
+  register: enrollment_keys
+  run_once: true
+
+- name: Stash default enrollment token for linux/windows client playbooks
+  ansible.builtin.copy:
+    dest: "{{ playbook_dir }}/../files/fleet_enrollment_token"
+    content: "{{ (enrollment_keys.json['items'] | selectattr('policy_id','equalto','fleet-server-policy') | list | first).api_key }}"
+    mode: '0600'
+  delegate_to: localhost
+  become: false
+  run_once: true
+  no_log: false

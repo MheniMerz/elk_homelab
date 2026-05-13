@@ -1,0 +1,33 @@
+---
+# Elastic Stack version — bump to upgrade
+elastic_version: "8.15.3"
+
+# Cluster identity
+es_cluster_name: "homelab-elk"
+
+# Heap size per ES node — half of VM RAM, capped at 31g
+es_heap_size: "4g"
+
+# Domain suffix used in certificates — use whatever resolves on your LAN
+# (If you don't have DNS, IPs work too but you'll need to add them to SAN list)
+elk_domain: "lan"
+
+# DNS names per node — must resolve from all ELK VMs and from clients
+es_hosts:
+  - "es01.{{ elk_domain }}"
+  - "es02.{{ elk_domain }}"
+  - "es03.{{ elk_domain }}"
+
+kibana_host: "kibana.{{ elk_domain }}"
+fleet_host:  "fleet.{{ elk_domain }}"
+logstash_host: "logstash.{{ elk_domain }}"
+
+# Secrets — encrypt with ansible-vault in vault.yml
+elastic_bootstrap_pw: "{{ vault_elastic_bootstrap_pw }}"
+kibana_system_pw:     "{{ vault_kibana_system_pw }}"
+logstash_writer_pw:   "{{ vault_logstash_writer_pw }}"
+
+# ILM / retention — tune to taste and disk size
+ilm_hot_rollover_gb: 30
+ilm_hot_rollover_age: "7d"
+ilm_delete_age: "60d"
