@@ -1,0 +1,19 @@
+proxmox_endpoint  = "https://192.168.1.121:8006/"
+proxmox_api_token = "root@pam!elk-deployment=58be1ab1-836c-48ec-b802-b7c1ad748559"
+proxmox_node      = "pve"
+
+template_vmid = 9000
+storage_pool  = "local-lvm"
+network_bridge = "vmbr0"
+
+gateway          = "192.168.1.1"
+subnet_cidr_bits = 24
+
+ip_es01     = "192.168.1.21"
+ip_es02     = "192.168.1.22"
+ip_es03     = "192.168.1.23"
+ip_kibana   = "192.168.1.24"
+ip_fleet    = "192.168.1.25"
+ip_logstash = "192.168.1.26"
+
+ssh_public_key_path = "~/.ssh/id_ed25519.pub"

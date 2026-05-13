@@ -1,0 +1,31 @@
+[elasticsearch]
+es01 ansible_host=${es01_ip} es_node_name=es01
+es02 ansible_host=${es02_ip} es_node_name=es02
+es03 ansible_host=${es03_ip} es_node_name=es03
+
+[kibana]
+kibana ansible_host=${kibana_ip}
+
+[fleet_server]
+fleet ansible_host=${fleet_ip}
+
+[logstash]
+logstash ansible_host=${logstash_ip}
+
+[elk_stack:children]
+elasticsearch
+kibana
+fleet_server
+logstash
+
+# ---- Clients — add your hosts here after the stack is up -----------------
+[linux_clients]
+# example: web01 ansible_host=192.168.10.50
+
+[windows_clients]
+# example: win01 ansible_host=192.168.10.60 ansible_user=Administrator ansible_connection=winrm ansible_winrm_server_cert_validation=ignore
+
+[all:vars]
+ansible_user=${ansible_user}
+ansible_ssh_common_args='-o StrictHostKeyChecking=accept-new'
+es_bootstrap_node=es01
